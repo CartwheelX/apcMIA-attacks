@@ -52,7 +52,6 @@ class CelebA(torch.utils.data.Dataset):
             self.target_type = target_type
         else:
             self.target_type = [target_type]
-
         self.root = root
         self.transform = transform
         self.target_transform =target_transform
