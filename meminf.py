@@ -883,7 +883,7 @@ class attack_for_blackbox_com_NEW():
                  
                 else:
                     results = self.attack_model(output, prediction, targets)
-                    contrast_loss = 0  # no contrastive loss for non-apcmia attacks
+                    contrast_loss = 0  # no contrastive loss for apcmia attacks
 
                 # # 3) compute entropies before & after
                 # # H_before = self.compute_entropy(output)               # (B,)
