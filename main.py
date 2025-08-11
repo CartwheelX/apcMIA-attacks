@@ -303,9 +303,9 @@ def shadow_train_func(PATH, device, train_set, test_set, shadow_model, batch_siz
 
 
 
-def test_meminf(PATH, device, num_classes, target_train, target_test, batch_size,  target_model, shadow_model, mode, dataset_name, attack_name, entropy_dis_dr, fist_cluster, arch, acc_gap):
+def test_meminf(PATH, device, num_classes, target_train, target_test, batch_size,  target_model, shadow_model, mode, dataset_name, attack_name, entropy_dis_dr, apcmia_cluster, arch, acc_gap):
 
-    if attack_name == "lira" or attack_name == "memia" or attack_name == "seqmia" or attack_name == "nsh" or attack_name == "fist" or attack_name == "mia" or attack_name == "m_lira":
+    if attack_name == "lira" or attack_name == "memia" or attack_name == "seqmia" or attack_name == "nsh" or attack_name == "apcmia" or attack_name == "mia" or attack_name == "m_lira":
         attack_trainloader, attack_testloader = get_attack_dataset(target_train, target_test, batch_size)
     
         
@@ -314,7 +314,7 @@ def test_meminf(PATH, device, num_classes, target_train, target_test, batch_size
         perturb_model = PerturbationModel(num_classes, device, hidden_dim=128, layer_dim=1, output_dim=1, batch_size=batch_size)
         
         finalAttackModel = FinalAttackClassifier(num_classes, 12)
-        attack_mode0_com(PATH + "_target.pth", PATH + "_shadow.pth",  PATH, device, attack_trainloader, attack_testloader, target_model, shadow_model, attack_model, finalAttackModel, perturb_model, num_classes, mode, dataset_name, attack_name, entropy_dis_dr, fist_cluster, arch, acc_gap)
+        attack_mode0_com(PATH + "_target.pth", PATH + "_shadow.pth",  PATH, device, attack_trainloader, attack_testloader, target_model, shadow_model, attack_model, finalAttackModel, perturb_model, num_classes, mode, dataset_name, attack_name, entropy_dis_dr, apcmia_cluster, arch, acc_gap)
 
     else:
         raise Exception("Wrong attack name")
@@ -336,8 +336,8 @@ def load_fpr_tpr_for_all_attacks(dataset_name, directory="."):
     Loads CSV files of the form:
         dataset_name_FPR_TPR_{attack_name}_.csv
     """
-    attack_names = ["fist", "memia", "m_lira", "seqmia", "mia", "nsh"]
-    # attack_names = ["fist","m_lira",]
+    attack_names = ["apcmia", "memia", "m_lira", "seqmia", "mia", "nsh"]
+    # attack_names = ["apcmia","m_lira",]
 
     fpr_tpr_dict = {}
 
@@ -374,7 +374,7 @@ def metric_results_new(fpr_list, tpr_list, attack_name, dataset_name, arch, dire
     Parameters:
       fpr_list: List of false positive rates.
       tpr_list: List of true positive rates.
-      attack_name: Name of the attack (e.g., "fist", "LiRa", etc.).
+      attack_name: Name of the attack (e.g., "apcmia", "LiRa", etc.).
       dataset_name: Name of the dataset (e.g., "CIFAR-10", "STL-10", etc.). (Case-insensitive.)
       arch: Architecture (e.g., "vgg16", "cnn", etc.).
       directory: Base directory in which to store CSV files (default "./tprs_at/").
@@ -433,7 +433,7 @@ def metric_results_new(fpr_list, tpr_list, attack_name, dataset_name, arch, dire
     
     # Mapping from attack names to display names for the "Method" column.
     attack_map = {
-        "fist": "FiST",
+        "apcmia": "apcMIA",
         "lira":   "LiRa",
         "memia":  "meMIA",
         "seqmia": "seqMIA",
@@ -501,7 +501,7 @@ def metric_results_mlp(fpr_list, tpr_list, attack_name, dataset_name, arch, dire
     Parameters:
       fpr_list: List of false positive rates.
       tpr_list: List of true positive rates.
-      attack_name: Name of the attack (e.g., "fist", "LiRa", etc.).
+      attack_name: Name of the attack (e.g., "apcmia", "LiRa", etc.).
       dataset_name: Name of the dataset (e.g., "Location", "Adult", "Texas-100", "Purchase-100"). Case-insensitive.
       arch: Architecture (e.g., "vgg16", "cnn", etc.).
       directory: Base directory for storing CSV files.
@@ -561,7 +561,7 @@ def metric_results_mlp(fpr_list, tpr_list, attack_name, dataset_name, arch, dire
     
     # Mapping from attack names (lower case) to display names for the "Method" column.
     attack_map = {
-        "fist": "FiST",
+        "apcmia": "apcMIA",
         "lira":   "LiRa",
         "memia":  "meMIA",
         "seqmia": "seqMIA",
@@ -626,7 +626,7 @@ def metric_results(fpr_list, tpr_list, attack_name, dataset_name, arch, director
     Parameters:
       fpr_list: List of false positive rates.
       tpr_list: List of true positive rates.
-      attack_name: Name of the attack (e.g., "fist", "LiRa", etc.).
+      attack_name: Name of the attack (e.g., "apcmia", "LiRa", etc.).
       dataset_name: Name of the dataset (e.g., "FMNIST", "UTKFace", etc.).
       arch: Architecture (e.g., "vgg16", "cnn", etc.).
       directory: Base directory in which to store the CSV files (default "./tprs_at/").
@@ -689,12 +689,12 @@ def metric_results(fpr_list, tpr_list, attack_name, dataset_name, arch, director
     master_csv = os.path.join(os.path.dirname(directory), f"all_tpr_{l_fpr}.csv")
 
     # Define expected columns. (You can add more columns if needed.)
-    columns = ["Dataset", "FiST", "LiRa", "meMIA", "seqMIA", "NSH", "MIA"]
+    columns = ["Dataset", "apcMIA", "LiRa", "meMIA", "seqMIA", "NSH", "MIA"]
 
     # Mapping from attack names to CSV column names.
         # Mapping from attack names (in lower case) to CSV column names.
     attack_col_map = {
-        "fist": "FiST",
+        "apcmia": "apcMIA",
         "lira":   "LiRa",
         "memia":  "meMIA",
         "seqmia": "seqMIA",
@@ -760,7 +760,7 @@ def plot_roc_curves_for_attacks(fpr_tpr_dict, dataset_name, save_path, arch):
 
     # Define a color palette for consistency
     attack_colors = {
-        "fist": "#0d0478",   # Blue
+        "apcmia": "#0d0478",   # Blue
         "mia":    "#9467bd",   # Red
         "seqmia": "#2ca02c",   # Green
         "memia":  "#d62728",   # Purple
@@ -771,7 +771,7 @@ def plot_roc_curves_for_attacks(fpr_tpr_dict, dataset_name, save_path, arch):
    
     # Define line styles for each attack method
     attack_linestyles = {
-        "fist": "-",
+        "apcmia": "-",
         "mia":    "--",
         "seqmia": "-.",
         "memia":  ":",
@@ -792,8 +792,8 @@ def plot_roc_curves_for_attacks(fpr_tpr_dict, dataset_name, save_path, arch):
             display_name = "meMIA"
         elif attack_name.upper() == "SEQMIA":
             display_name = "seqMIA"
-        elif attack_name.upper() == "FIST":
-            display_name = "FiST"
+        elif attack_name.upper() == "APCMIA":
+            display_name = "apcMIA"
         elif attack_name.upper() == "NSH":
             display_name = "NSH"
         elif attack_name.upper() == "MIA":
@@ -1206,7 +1206,7 @@ def main():
     delta = args.delta
     mode = args.mode
     apcmia_cluster = args.apcmia_cluster
-    fist_cluster = args.fist_cluster
+   
     
     attack_name = args.attack_name
     attack_name = attack_name.lower()
@@ -1253,8 +1253,8 @@ def main():
             fpr_tpr_data = load_fpr_tpr_for_all_attacks(dataset_name, directory=TARGET_ROOT)
            
             # Save fpr_tpr_data to a CSV file
-            if "fist" in fpr_tpr_data:
-                fpr, tpr = fpr_tpr_data["fist"]
+            if "apcmia" in fpr_tpr_data:
+                fpr, tpr = fpr_tpr_data["apcmia"]
                 df_roc = pd.DataFrame({"FPR": fpr, "TPR": tpr})
 
                 fpr_array = np.array(fpr)
@@ -1299,7 +1299,7 @@ def main():
                     df_roc.to_excel(writer, sheet_name="ROC_Curves", index=False)
                     df_metrics.to_excel(writer, sheet_name="Metrics", index=False)
             else:
-                print("fist data not found.")
+                print("apcmia data not found.")
              # 2. Plot the ROC curves for all attacks in a single figure.
             print(f"ROC saved to {roc_curves_pth}")
            
@@ -1311,8 +1311,8 @@ def main():
         elif args.plot_results.lower() == "th":
 
             print(f"attack name is {attack_name}")
-            if attack_name == "fist":
-                print("plotting thresholds for fist")
+            if attack_name == "apcmia":
+                print("plotting thresholds for apcmia")
 
                 base_directory = "./demoloader/trained_model"  # top-level directory to search
                 output_dir     = "./threshold_plots"          # where to save the figures
@@ -1320,7 +1320,7 @@ def main():
                 exit()
             else:
 
-                print(f"can't plot thresholds for {attack_name}, try fist")
+                print(f"can't plot thresholds for {attack_name}, try apcmia")
                 exit()
 
             
@@ -1383,7 +1383,7 @@ def main():
         acc_gap = get_acc_gap(MODEL_SAVE_PATH)
         print(f"[INFO] Using acc_gap = {acc_gap:.5f} for attack.")
 
-        print("[INFO] Executing FiST attack...")
+        print("[INFO] Executing apcmia attack...")
         test_meminf(
             MODEL_SAVE_PATH,
             device,
@@ -1397,7 +1397,7 @@ def main():
             dataset_name,
             attack_name,
             entropy_dis_dr,
-            fist_cluster,
+            apcmia_cluster,
             arch,
             acc_gap
         )
