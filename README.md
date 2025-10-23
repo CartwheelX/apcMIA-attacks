@@ -59,6 +59,7 @@ Example (MLP on Location):
 
 ```bash
 python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --arch mlp --train_model
+```
 ---
 
 ### 🔧 Train and run apcMIA Attack
