@@ -14,11 +14,10 @@ from functools import partial
 from typing import Any, Callable, List, Optional, Union, Tuple
 torch.manual_seed(0)
 import torch.nn.functional as F
-import math
-
 
 from torch.utils.data import Dataset, DataLoader
 import pickle
+
 
 class CNN(nn.Module):
     def __init__(self, input_channel=3, num_classes=10):
@@ -48,27 +47,261 @@ class CNN(nn.Module):
         x = self.classifier(x)
         return x
 
-   
-    
-class simpleNN(nn.Module):
-    def __init__(self, input_size, num_classes=30):
-        super(simpleNN, self).__init__()
-        
-        self.classifier = nn.Sequential(
-            nn.Linear(input_size, 128),
+
+class CNN_rmia(nn.Module):
+    def __init__(self, input_channel=3, num_classes=10):
+        super(CNN_rmia, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channel, 6, kernel_size=5),   # 64 -> 60
             nn.ReLU(),
-            # nn.Linear(128, 64),
-            # nn.ReLU(),
-            nn.Linear(128, num_classes),
+            nn.MaxPool2d(kernel_size=2, stride=2),        # 60 -> 30
+            nn.Conv2d(6, 16, kernel_size=5),              # 30 -> 26
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),        # 26 -> 13
+        )
+
+        # For 64x64 input: out channels=16, H=W=13  =>  16*13*13 = 2704
+        self.classifier = nn.Sequential(
+            nn.Linear(16 * 13 * 13, 120),
+            nn.ReLU(),
+            nn.Linear(120, 84),
+            nn.ReLU(),
+            nn.Linear(84, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+     
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import List, Callable
+import functools
+
+BN_MOM = 0.9
+BN_EPS  = 1e-5
+
+class WRNBlock(nn.Module):
+    def __init__(
+        self,
+        nin: int,
+        nout: int,
+        stride: int = 1,
+        bn: Callable = functools.partial(nn.BatchNorm2d, momentum=BN_MOM, eps=BN_EPS),
+    ):
+        super().__init__()
+        self.proj_conv = None
+        if nin != nout or stride > 1:
+            self.proj_conv = nn.Conv2d(nin, nout, kernel_size=1, stride=stride, padding=0, bias=False)
+
+        self.norm_1 = bn(nin)
+        self.conv_1 = nn.Conv2d(nin, nout, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.norm_2 = bn(nout)
+        self.conv_2 = nn.Conv2d(nout, nout, kernel_size=3, stride=1, padding=1, bias=False)
+
+    def forward(self, x):
+        o1 = torch.relu(self.norm_1(x))
+        y  = self.conv_1(o1)
+        o2 = torch.relu(self.norm_2(y))
+        z  = self.conv_2(o2)
+        return z + (self.proj_conv(o1) if self.proj_conv is not None else x)
+# -------------------------------------------------
+# WideResNet core
+# -------------------------------------------------
+class WRNBlock(nn.Module):
+    def __init__(
+        self,
+        nin: int,
+        nout: int,
+        stride: int = 1,
+        bn: Callable = functools.partial(nn.BatchNorm2d, momentum=BN_MOM, eps=BN_EPS),
+    ):
+        super().__init__()
+        self.proj_conv = None
+        if nin != nout or stride > 1:
+            self.proj_conv = nn.Conv2d(nin, nout, kernel_size=1, stride=stride, padding=0, bias=False)
+
+        self.norm_1 = bn(nin)
+        self.conv_1 = nn.Conv2d(nin, nout, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.norm_2 = bn(nout)
+        self.conv_2 = nn.Conv2d(nout, nout, kernel_size=3, stride=1, padding=1, bias=False)
+
+    def forward(self, x):
+        o1 = torch.relu(self.norm_1(x))
+        y  = self.conv_1(o1)
+        o2 = torch.relu(self.norm_2(y))
+        z  = self.conv_2(o2)
+        return z + (self.proj_conv(o1) if self.proj_conv is not None else x)
+class WideResNetGeneral(nn.Module):
+    def __init__(
+        self,
+        nin: int,
+        nclass: int,
+        blocks_per_group: List[int],
+        width: int,
+        bn: Callable = functools.partial(nn.BatchNorm2d, momentum=BN_MOM, eps=BN_EPS),
+    ):
+        super().__init__()
+        widths = [int(v * width) for v in [16 * (2**i) for i in range(len(blocks_per_group))]]
+
+        n = 16
+        ops = [nn.Conv2d(nin, n, kernel_size=3, padding=1, bias=False)]
+        for i, (block, w) in enumerate(zip(blocks_per_group, widths)):
+            stride = 2 if i > 0 else 1
+            ops.append(WRNBlock(n, w, stride, bn))
+            for _ in range(1, block):
+                ops.append(WRNBlock(w, w, 1, bn))
+            n = w
+
+        # tail
+        ops += [
+            bn(n),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(n, nclass),
+        ]
+        self.layers = nn.Sequential(*ops)
+
+    def forward(self, x):
+        return self.layers(x)
+class WideResNet(WideResNetGeneral):
+    def __init__(
+        self,
+        nin: int,
+        nclass: int,
+        depth: int = 28,
+        width: int = 2,
+        bn: Callable = functools.partial(nn.BatchNorm2d, momentum=BN_MOM, eps=BN_EPS),
+    ):
+        assert (depth - 4) % 6 == 0, "depth should be 6n+4 (e.g., 16, 22, 28, 40)"
+        n = (depth - 4) // 6
+        blocks_per_group = [n, n, n]
+        super().__init__(nin, nclass, blocks_per_group, width, bn)
+
+# -------------------------------------------------
+# Compatibility wrapper (matches your CNN init)
+# -------------------------------------------------
+class WideResNet_CNNStyle(WideResNet):
+    """
+    Same API as your other CNNs:
+      __init__(input_channel=..., num_classes=..., depth=..., width=...)
+    Forward returns logits [B, num_classes].
+    """
+    def __init__(
+        self,
+        input_channel: int = 3,
+        num_classes: int = 10,
+        depth: int = 28,
+        width: int = 2,
+        bn: Callable = functools.partial(nn.BatchNorm2d, momentum=BN_MOM, eps=BN_EPS),
+    ):
+        super().__init__(nin=input_channel, nclass=num_classes, depth=depth, width=width, bn=bn)
+
+
+# vanilla CNN 
+class CNN(nn.Module):
+    def __init__(self, input_channel=3, num_classes=10):
+        super(CNN, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channel, 32, kernel_size=3),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 64, kernel_size=3),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(64, 128, kernel_size=3),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(128*6*6, 512),
+            nn.ReLU(),
+            nn.Linear(512, num_classes),
         )
 
 
-    def forward(self, X_Batch):
-        x = self.classifier(X_Batch)
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+    
+# Advanced VGG style CNN 
+class AdvancedCNN_CNNStyle(nn.Module):
+    def __init__(self, input_channel=3, num_classes=10):
+        super().__init__()
+        # --- features ---
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channel, 64, 3, padding=1),
+            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+
+            nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(128,128, 3, padding=1), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),  # 32->16 (or 64->32)
+
+            nn.Conv2d(128,256, 3, padding=1),
+            nn.BatchNorm2d(256), nn.ReLU(inplace=True),
+            nn.Conv2d(256,256, 3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(256,256, 3, padding=1), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
+
+            nn.Conv2d(256,512, 3, padding=1),
+            nn.BatchNorm2d(512), nn.ReLU(inplace=True),
+            nn.Conv2d(512,512, 3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(512,512, 3, padding=1), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
+
+            # Force a fixed 4x4 map so FC dims are stable for 32x32 or 64x64
+            nn.AdaptiveAvgPool2d(4),
+        )
+
+        # 512 * 4 * 4 = 8192
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(8192, 8192), nn.ReLU(inplace=True),
+            nn.Linear(8192, 4096), nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(4096, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
         return x
 
+class simpleNN(nn.Module):
+    def __init__(self, input_size, num_classes, dropout_p: float = 0.5, use_layernorm: bool = True, input_dropout_p: float = 0.0):
+        super().__init__()
+        # Widen hidden layers for more capacity on Location
+        hidden1, hidden2 = 256, 128
+        norm1 = nn.LayerNorm(hidden1) if use_layernorm else nn.BatchNorm1d(hidden1)
+        norm2 = nn.LayerNorm(hidden2) if use_layernorm else nn.BatchNorm1d(hidden2)
+        self.net = nn.Sequential(
+            nn.Dropout(input_dropout_p),
+            nn.Linear(input_size, hidden1),
+            norm1,
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_p),
 
+            nn.Linear(hidden1, hidden2),
+            norm2,
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_p),
 
+            nn.Linear(hidden2, num_classes),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+    
 class simpleNN_Target_purchase(nn.Module):
     def __init__(self, input_size, num_classes=30):
         super(simpleNN_Target_purchase, self).__init__()
@@ -93,7 +326,6 @@ class simpleNN_Target_purchase(nn.Module):
     def forward(self, X_Batch):
         x = self.classifier(X_Batch)
         return x
-
 
 class simpleNN_Target_texas(nn.Module):
     def __init__(self, input_size, num_classes=100):
@@ -159,7 +391,6 @@ class Adult(nn.Module):
 
     def forward(self, X_Batch):
         return self.classifier(X_Batch)
-
 
 class UTKFaceDataset(torch.utils.data.Dataset):
     
@@ -234,7 +465,6 @@ class UTKFaceDataset(torch.utils.data.Dataset):
 
         return image, target
 
-
 # Define the Perturbation Model
 class PerturbationModel(nn.Module):
     def __init__(self, class_num,  device,  hidden_dim=128, layer_dim=1, output_dim=1, batch_size=64):
@@ -248,17 +478,21 @@ class PerturbationModel(nn.Module):
           
 		)
         self.model = nn.Sequential(
-           
+            # nn.Linear(class_num, 128),  # First hidden layer with 64 neurons
+            # nn.ReLU(),                 # Activation function
+            # nn.BatchNorm1d(128),        # Batch normalization
+            
             nn.Linear(class_num, 256),         # Second hidden layer with 32 neurons
             nn.ReLU(),
-          
+            # nn.BatchNorm1d(64),
             
             nn.Linear(256, 128),         # Second hidden layer with 32 neurons
             nn.ReLU(),
 
             nn.Linear(128, 64),         # Second hidden layer with 32 neurons
             nn.ReLU(),
-           
+            # nn.BatchNorm1d(32),
+
             nn.Linear(64, 32),         # Second hidden layer with 32 neurons
             nn.ReLU(),
 
@@ -266,23 +500,20 @@ class PerturbationModel(nn.Module):
             nn.Sigmoid()               # Sigmoid ensures perturbation values are bounded (0, 1)
         )
     
-    # def forward(self, PV_batch, member):
-    #      return self.model(PV_batch, member)
+    def forward(self, PV_batch, target_label_batch):
+        # Ensure target_label_batch is a float tensor with shape (batch_size, 1)
+        # target_label_batch = target_label_batch.float().unsqueeze(1)
+        
+        # Process target_label_batch through the Prediction Component
+        # pred_component = self.Prediction_Component(target_label_batch)
+        
+        # Concatenate the PV_batch and the prediction component result along the feature dimension
+        # combined_features = torch.cat([PV_batch, pred_component], dim=1)
+        
+        return self.model(PV_batch)
+        # Forward the concatenated features through the model
+        # return self.model(torch.cat([PV_batch, self.Prediction_Component(target_label_batch.float().unsqueeze(1))], dim=1))
     
-    def forward(self, PV_batch):
-        """
-        PV_batch: tensor (B, class_num)
-        member_flag: tensor (B,) or (B,1) with values in {0,1}
-        """
-        # # ensure member_flag is (B,1)
-        # if member_flag.dim() == 1:
-        #     member_flag = member_flag.unsqueeze(1)  # → (B,1)
-        # # concatenate along feature dim
-        x = torch.cat([PV_batch], dim=1)  # → (B, class_num+1)
-        return self.model(x)
-       
- 
-
 
 class AttackDataset(Dataset):
     def __init__(self, pickle_path):
@@ -313,67 +544,22 @@ class AttackDataset(Dataset):
     def __getitem__(self, idx):
         return self.outputs[idx], self.predictions[idx], self.members[idx], self.targets[idx]
 
-
-
-class CombinedShadowAttack(nn.Module):
+class CombinedShadowAttackModel_NEW(nn.Module):
     def __init__(self, class_num,  device, mode, attack_name,  hidden_dim=128, layer_dim=1, output_dim=1, batch_size=64):
         
-        super(CombinedShadowAttack, self).__init__()
+        super(CombinedShadowAttackModel_NEW, self).__init__()
         
-        # batch_size = 2
-        self.h_size_1 = 256
-        self.h_size_2 = 128
-        self.h_size_3 = 50
-        
-        self.lstm1 = nn.LSTM(class_num, self.h_size_1, batch_first=True)
-        self.dropout1 = nn.Dropout(0.1)
-        self.lstm2 = nn.LSTM(self.h_size_1, self.h_size_2, batch_first=True)
-        self.dropout2 = nn.Dropout(0.1)
-        self.lstm3 = nn.LSTM(self.h_size_2, self.h_size_3, batch_first=True)
-        
-        self.hidden2label = nn.Linear(self.h_size_3, 2)
-        
+       
         self.input_dim = class_num
+        
         self.batch_size = batch_size
-        
-        self.batch_size = 64
-        
         self.hidden_dim = hidden_dim
-        self.layer_dim = layer_dim
         self.device = device
-        
+
         self.mode = mode
         self.attack_name = attack_name
         
-        
-        self.hidden1 = self.init_hidden1()
-        self.hidden2 = self.init_hidden2()
-        self.hidden3 = self.init_hidden3()
-        
-        
-        self.Output_NSH = nn.Sequential(
-			nn.Linear(class_num, 10),
-			nn.ReLU(),
-			nn.Linear(10, 30),
-            nn.ReLU(),
-			nn.Linear(30, 10),
-		)
-        
-        self.label_NSH = nn.Sequential(
-			nn.Linear(class_num, 100),
-			nn.ReLU(),
-			nn.Linear(100, 5),
-		)
-        
-        self.final_NSH = nn.Sequential(
-			nn.Linear(5+10, 100),
-			nn.ReLU(),
-			nn.Linear(100, 50),
-            nn.ReLU(),
-			nn.Linear(50, 2),
-		)
-        
-        
+    
         
         self.Output_Component = nn.Sequential(
 			# nn.Dropout(p=0.2),
@@ -383,17 +569,7 @@ class CombinedShadowAttack(nn.Module):
             # nn.ReLU(),
 			# nn.Linear(256, 64),
 		)
-        
-        self.Output_Component_meMIA = nn.Sequential(
-			# nn.Dropout(p=0.2),
-			nn.Linear(class_num, 512),
-			nn.ReLU(),
-			nn.Linear(512, 256),
-            nn.ReLU(),
-			nn.Linear(256, 128),
-            nn.ReLU(),
-			nn.Linear(128, 64),
-		)
+    
         
         self.Prediction_Component = nn.Sequential(
 			# nn.Dropout(p=0.5),
@@ -403,42 +579,9 @@ class CombinedShadowAttack(nn.Module):
           
 		)
 
-        self.meMIA_Encoder_Component_joint = nn.Sequential(
-			nn.Linear(self.h_size_3+64+64, 512), #mine
-			nn.ReLU(),
-			# nn.Dropout(p=0.5),
-			nn.Linear(512, 256),
-			nn.ReLU(),
-			# nn.Dropout(p=0.5),
-			nn.Linear(256, 128),
-			nn.ReLU(),
-			# nn.Dropout(p=0.5),
-            nn.Linear(128, 2),
-		)
         
-        self.mia_Encoder_Component = nn.Sequential(
-			nn.Linear(class_num, 512),
-			nn.ReLU(),
-			nn.Linear(512, 256),
-			nn.ReLU(),
-			nn.Linear(256, 128),
-			nn.ReLU(),
-            nn.Linear(128, 2),
-           
-		)
-        
-        self.meMIA_Encoder_Component = nn.Sequential(
-			nn.Linear(class_num+64, 512),
-			nn.ReLU(),
-			nn.Linear(512, 256),
-			nn.ReLU(),
-			nn.Linear(256, 128),
-			nn.ReLU(),
-            nn.Linear(128, 2),
-           
-		)
         self.Encoder_Component = nn.Sequential(
-			nn.Linear(class_num+64, 512),
+			nn.Linear(class_num+64, 512), #mia_actual
 			nn.ReLU(),
 			nn.Linear(512, 256),
 			nn.ReLU(),
@@ -465,16 +608,7 @@ class CombinedShadowAttack(nn.Module):
     )
 
    
-        
-    def init_hidden1(self):
-        return (Variable(torch.zeros(1, self.batch_size, self.h_size_1).to(self.device)),
-                Variable(torch.zeros(1, self.batch_size, self.h_size_1).to(self.device)))
-    def init_hidden2(self):
-        return (Variable(torch.zeros(1, self.batch_size, self.h_size_2).to(self.device)),
-                Variable(torch.zeros(1, self.batch_size, self.h_size_2).to(self.device)))
-    def init_hidden3(self):
-        return (Variable(torch.zeros(1, self.batch_size, self.h_size_3).to(self.device)),
-                Variable(torch.zeros(1, self.batch_size, self.h_size_3).to(self.device)))
+    
    
     def pertubed_attack(self, output, prediction):
         Prediction_Component_result = self.Prediction_Component(prediction)
@@ -500,83 +634,86 @@ class CombinedShadowAttack(nn.Module):
             raise NotImplementedError("get_embeddings is implemented only for apcmia attack.")
             
     def forward(self, output, prediction, label):
-        
-        self.hidden1 = self.init_hidden1()
-        self.hidden2 = self.init_hidden2()
-        self.hidden3 = self.init_hidden3()
        
         if self.attack_name == "apcmia":
             return self.pertubed_attack(output, prediction)
-        
-  
-# 1) Shrink & regularize your MLP
-class FinalAttackClassifier(nn.Module):
-    def __init__(self, num_classes, input_dim=12):
+    
+
+            
+
+
+
+class ConvBNAct(nn.Module):
+    def __init__(self, c_in, c_out, k=3, s=1, p=1):
         super().__init__()
-        input_dim = 12+1 + 2*num_classes
-        
-        self.bn1 = nn.BatchNorm1d(input_dim)
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 16)
-        self.fc4 = nn.Linear(16, 8)
-        self.fc5 = nn.Linear(8, 1)
+        self.block = nn.Sequential(
+            nn.Conv2d(c_in, c_out, kernel_size=k, stride=s, padding=p, bias=False),
+            nn.BatchNorm2d(c_out),
+            nn.ReLU(inplace=True)
+        )
+    def forward(self, x): return self.block(x)
+
+class SmallSTLNet(nn.Module):
+    """
+    Overfit-resistant CNN for STL-10.
+    - Uses padding to keep spatial sizes stable within a stage.
+    - Dropout2d after each downsample to regularize.
+    - GAP head avoids large fully-connected layers.
+    """
+    def __init__(self, input_channel=3, num_classes=10, drop_p=(0.1, 0.2, 0.3)):
+        super().__init__()
+        # Stage 1: 96x96 -> 48x48
+        self.stage1 = nn.Sequential(
+            ConvBNAct(input_channel, 64),
+            ConvBNAct(64, 64),
+            nn.MaxPool2d(2),          # downsample
+            nn.Dropout2d(drop_p[0]),
+        )
+        # Stage 2: 48x48 -> 24x24
+        self.stage2 = nn.Sequential(
+            ConvBNAct(64, 128),
+            ConvBNAct(128, 128),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(drop_p[1]),
+        )
+        # Stage 3: 24x24 -> 12x12
+        self.stage3 = nn.Sequential(
+            ConvBNAct(128, 256),
+            ConvBNAct(256, 256),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(drop_p[2]),
+        )
+        # Head
+        self.pool = nn.AdaptiveAvgPool2d(1)    # -> (B, C, 1, 1)
+        self.classifier = nn.Linear(256, num_classes)
 
     def forward(self, x):
-        x = self.bn1(x)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return torch.sigmoid(self.fc5(x))
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.pool(x).flatten(1)
+        return self.classifier(x)
+    
 
-# 2) Simple gate model
-class GateNet(nn.Module):
-    def __init__(self, num_classes, input_dim=12):
-        super().__init__()
-        input_dim = 12
-        
-        # self.bn1 = nn.BatchNorm1d(input_dim)
-        self.fc1 = nn.Linear(input_dim, 32)
-        # self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 16)
-        self.fc4 = nn.Linear(16, 8)
-        self.fc5 = nn.Linear(8, 1)
-
-    def forward(self, x):
-        # x = self.bn1(x)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return torch.sigmoid(self.fc5(x))
- 
-class CNN(nn.Module):
+class CNN_STL10(nn.Module):
     def __init__(self, input_channel=3, num_classes=10):
-        super(CNN, self).__init__()
+        super(CNN_STL10, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(input_channel, 32, kernel_size=3), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3),            nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3),           nn.ReLU(), nn.MaxPool2d(2),
         )
-
         self.classifier = nn.Sequential(
-            nn.Linear(128*6*6, 512),
-            nn.ReLU(),
-            nn.Linear(512, num_classes),
+            nn.Linear(128*6*6, 256),  # 512 -> 256
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),          # <— add this
+            nn.Linear(256, num_classes),
         )
-
-
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
+        return self.classifier(x)
+    
 
 class ConvBlock(nn.Module):
     def __init__(self, conv_params):
@@ -626,11 +763,11 @@ class FcBlock(nn.Module):
     def forward(self, x):
         fwd = self.layers(x)
         return fwd
+import math
 
-
-class VGG16(nn.Module):
+class VGG16_new(nn.Module):
     def __init__(self,input_channel, num_classes ):
-        super(VGG16, self).__init__()
+        super(VGG16_new, self).__init__()
 
         self.input_size = 64
         self.num_classes = num_classes
@@ -699,3 +836,119 @@ class VGG16(nn.Module):
             elif isinstance(m, nn.Linear):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 64
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512*block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+            
+class wide_basic(nn.Module):
+    def __init__(self, in_planes, planes, dropout_rate, stride=1):
+        super(wide_basic, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, padding=1, bias=True)
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=True)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=True),
+            )
+
+    def forward(self, x):
+        out = self.dropout(self.conv1(F.relu(self.bn1(x))))
+        out = self.conv2(F.relu(self.bn2(out)))
+        out += self.shortcut(x)
+
+        return out
+
+def conv3x3(in_planes, out_planes, stride=1):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=True)
+import torch.nn.init as init
+def conv_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        init.xavier_uniform_(m.weight, gain=np.sqrt(2))
+        init.constant_(m.bias, 0)
+    elif classname.find('BatchNorm') != -1:
+        init.constant_(m.weight, 1)
+        init.constant_(m.bias, 0)
+
+class Wide_ResNet28(nn.Module):
+    def __init__(self, num_classes):
+        super(Wide_ResNet28, self).__init__()
+        self.in_planes = 16
+        dropout_rate = 0.3
+        depth = 4
+        assert ((depth-4)%6 ==0), 'Wide-resnet depth should be 6n+4'
+        n = (depth-4)/6
+        k = 10
+
+        print('| Wide-Resnet %dx%d' %(depth, k))
+        nStages = [16, 16*k, 32*k, 64*k]
+
+        self.conv1 = conv3x3(3,nStages[0])
+        self.layer1 = self._wide_layer(wide_basic, nStages[1], n, dropout_rate, stride=1)
+        self.layer2 = self._wide_layer(wide_basic, nStages[2], n, dropout_rate, stride=2)
+        self.layer3 = self._wide_layer(wide_basic, nStages[3], n, dropout_rate, stride=2)
+        self.bn1 = nn.BatchNorm2d(nStages[3], momentum=0.9)
+        # self.linear = nn.Linear(nStages[3], num_classes)
+        self.linear = nn.Linear(nStages[3] * 4, num_classes)
+
+
+
+    def _wide_layer(self, block, planes, num_blocks, dropout_rate, stride):
+        strides = [stride] + [1]*(int(num_blocks)-1)
+        layers = []
+
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, dropout_rate, stride))
+            self.in_planes = planes
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = F.relu(self.bn1(out))
+        out = F.avg_pool2d(out, 8)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+
+        return out          
+            
+
+            
