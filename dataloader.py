@@ -52,6 +52,7 @@ class CelebA(torch.utils.data.Dataset):
             self.target_type = target_type
         else:
             self.target_type = [target_type]
+
         self.root = root
         self.transform = transform
         self.target_transform =target_transform
@@ -297,8 +298,7 @@ def Purchase(num_classes):
     else:
         print(f"No.")
     
-    # exit()
-    
+
     # Read the file line by line
     with open(file_path, 'r') as file:
         for line in file:
@@ -309,12 +309,10 @@ def Purchase(num_classes):
                 # print(f"purchase_label: {type(purchase_label)}")
                 
                 purchase_feat = [int(token) for token in parts[1:]]  # Convert the rest to integers (locations)
-                # print(len(purchase_feat))
+            
                 purchase_labels.append(purchase_label)
                 purchase_feats.append(purchase_feat)
-                
-            # break
-
+    
     # Convert lists to NumPy arrays
     Y = np.array(purchase_labels)
     Y = Y.reshape(-1, 1)
@@ -469,30 +467,45 @@ def adult(num_classes):
     
     return dataset
 
-
-
-
 def prepare_dataset(dataset_name, attr, root, device, arch, DSize):
-    num_classes, dataset, target_model, shadow_model = get_model_dataset(dataset_name, device, arch, attr=attr, root=root)
+    num_classes, dataset, target_model, shadow_model = get_model_dataset(
+        dataset_name, device, arch, attr=attr, root=root
+    )
     length = len(dataset)
-    
     print(f"Dataset {dataset_name},  shape: {len(dataset)} samples")
-    
-    train_size = length // 2
-    test_size = length - train_size
-    
-    target_train, target_test = torch.utils.data.random_split(dataset, [train_size, test_size])
-    shadow_train, shadow_test = torch.utils.data.random_split(dataset, [train_size, test_size])
 
-   
+    # Use a stratified 50/50 split to preserve class distribution in train/test.
+    indices = np.arange(length)
+    labels = []
+    for idx in indices:
+        _, target = dataset[idx]
+        # handle tuple/list targets as used by some datasets
+        if isinstance(target, (list, tuple)):
+            target = target[0]
+        if torch.is_tensor(target):
+            target = target.item()
+        labels.append(int(target))
+
+    train_idx, test_idx = train_test_split(
+        indices,
+        train_size=0.5,
+        stratify=labels,
+        random_state=42,
+    )
+
+    target_train = torch.utils.data.Subset(dataset, train_idx.tolist())
+    target_test = torch.utils.data.Subset(dataset, test_idx.tolist())
+
+    shadow_train = torch.utils.data.Subset(dataset, train_idx.tolist())
+    shadow_test = torch.utils.data.Subset(dataset, test_idx.tolist())
+ 
     return num_classes, target_train, target_test, shadow_train, shadow_test, target_model, shadow_model
-
 
 
 def get_model_dataset(dataset_name, device, arch, attr, root):
     print(f"device in get_model_dataset: {device}")
     # exit()
-    if dataset_name.lower() == "utkface":
+    if dataset_name.lower() == "utkface": # OK for all arch
         if isinstance(attr, list):
             num_classes = []
             for a in attr:
@@ -525,21 +538,62 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
         dataset = UTKFaceDataset(root=root, attr=attr, transform=transform)
         input_channel = 3
         
-   
 
-    elif dataset_name.lower() == "stl10":
+    elif dataset_name.lower() == "stl10": # only van_cnn and Advcnn, VGG16 maybe, rmia not here
         num_classes = 10
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
 
+        if arch.lower() == 'van_cnn':
+            transform = transforms.Compose([
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
+            train_tf = transform
+            test_tf = transform
+
+        elif arch.lower() == "cnn":
+            
+            train_tf = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  # Ajustes aleatorios de brillo, contraste, saturación y tono
+                transforms.RandomPerspective(distortion_scale=0.5, p=0.5),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+            ])
+
+            test_tf = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+        
+        elif arch.lower() == "wrn_rmia": # 
+                
+                train_tf = transforms.Compose([
+                transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  # Ajustes aleatorios de brillo, contraste, saturación y tono
+                    transforms.RandomPerspective(distortion_scale=0.5, p=0.5),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.ToTensor(),
+                ])
+
+                test_tf = transforms.Compose([
+                    transforms.ToTensor(),
+                ])
+
+        else: # maybe for vgg16 revert back to orioginal transform
+
+                transform = transforms.Compose([
+                    transforms.Resize((64, 64)),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                    # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                ])
+                
+                train_tf = transform
+                test_tf = transform
+            
         train_set = torchvision.datasets.STL10(
-                root=root, split='train', transform=transform, download=True)
+                root=root, split='train', transform=train_tf, download=True)
             
         test_set = torchvision.datasets.STL10(
-                root=root, split='test', transform=transform, download=True)
+                root=root, split='test', transform=test_tf, download=True)
         
         dataset = train_set + test_set
         input_channel = 3
@@ -547,22 +601,67 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
         
         # exit()
     
-    elif dataset_name.lower() == "cifar10":
+    elif dataset_name.lower() == "cifar10": # OK for all arch
         # root = "./data"
         print(f"CIFAR10")
         
         num_classes = 10
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
+        if arch.lower() == 'van_cnn':
+
+            transform = transforms.Compose([
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ])
+            
+            train_tf = transform
+            test_tf = transform
+
+        elif arch.lower() == "cnn":
+            
+            train_tf = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  # Ajustes aleatorios de brillo, contraste, saturación y tono
+                transforms.RandomPerspective(distortion_scale=0.5, p=0.5),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+            ])
+
+            test_tf = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+
+        elif arch.lower() == "wrn_rmia":
+
+                train_tf = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                    (0.2470, 0.2435, 0.2616)),
+                ])
+                test_tf = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                        (0.2470, 0.2435, 0.2616)),
+                ])
+
+        else: # maybe for vgg16 revert back to orioginal transform
+
+                transform = transforms.Compose([
+                    transforms.Resize((64, 64)),
+                    transforms.ToTensor(),
+                    # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                ])
+                
+                train_tf = transform
+                test_tf = transform
 
         train_set = torchvision.datasets.CIFAR10(
-                root=root, train=True, transform=transform, download=True)
+                root=root, train=True, transform=train_tf, download=True)
         test_set = torchvision.datasets.CIFAR10(
-                root=root, train=False, transform=transform, download=True)
+                root=root, train=False, transform=test_tf, download=True)
 
         dataset = train_set + test_set
         input_channel = 3
@@ -572,31 +671,132 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
         print(f"type of cifar dataset: {type(train_set)}")
         # exit()
     
-    elif dataset_name.lower() == "cifar100":
+    elif dataset_name.lower() == "cifar100": # OK for all arch
         
         print(f"CIFAR100")
         
         num_classes = 100
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
+        if arch.lower() == 'van_cnn':
+            transform = transforms.Compose([
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ])
+            train_tf = transform
+            test_tf = transform    
+
+        elif arch.lower() == "cnn":
+            
+            train_tf = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),  # Ajustes aleatorios de brillo, contraste, saturación y tono
+                transforms.RandomPerspective(distortion_scale=0.5, p=0.5),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+            ])
+
+            test_tf = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+
+        elif arch.lower() == "wrn_rmia":
+
+                train_tf = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5071, 0.4867, 0.4408),
+                                    (0.2675, 0.2565, 0.2761)),
+                ])
+                test_tf = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5071, 0.4867, 0.4408),
+                                        (0.2675, 0.2565, 0.2761)),
+                ])
+                
+
+        else: # maybe for vgg16 revert back to orioginal transform
+
+                transform = transforms.Compose([
+                    transforms.Resize((64, 64)),
+                    transforms.ToTensor(),
+                    # transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                ])
+                
+                train_tf = transform
+                test_tf = transform
+    
 
         train_set = torchvision.datasets.CIFAR100(
-                root=root, train=True, transform=transform, download=True)
+                root=root, train=True, transform=train_tf, download=True)
         test_set = torchvision.datasets.CIFAR100(
-                root=root, train=False, transform=transform, download=True)
+                root=root, train=False, transform=test_tf, download=True)
 
         dataset = train_set + test_set
         input_channel = 3
         print(f"size of CIFAR100 dataset: {len(train_set), len(test_set), len(dataset)}")
+   
+    elif dataset_name.lower() == "fmnist": # OK for all arch
+        num_classes = 10
+        transform = transforms.Compose([
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+
+        train_set = torchvision.datasets.FashionMNIST(
+                root=root, train=True, download=True, transform=transform)
+        test_set = torchvision.datasets.FashionMNIST(
+                root=root, train=False, download=True, transform=transform)
+
+        dataset = train_set + test_set
+        input_channel = 1
+        print(f"size of FMNIST dataset: {len(train_set), len(test_set)}")
+        # exit()
+   
+    elif dataset_name.lower() == "imagenet": # OK for all arch
+        # print(f"Imagenet")
+        
+        from torchvision.datasets import Imagenette
+        from torchvision.models import ResNet50_Weights
+
+        root = root
+        weights = ResNet50_Weights.IMAGENET1K_V2
+        tf = weights.transforms()
+        train_ds = Imagenette(root, split="train", download=False, transform=tf)
+        test_ds = Imagenette(root, split="val", download=False, transform=tf)
+        dataset = train_ds
+        num_classes = 10
+        input_channel = 3
+        print(f"size of Imagenet dataset: {len(train_ds), len(test_ds), len(dataset)}")
+        exit()
 
     elif dataset_name.lower() == "country":
         
         print(f"country211")
+        
+        num_classes = 100
+
+        # Adjust the transformations as needed for your task.
+        transform = transforms.Compose([
+            transforms.Resize((64, 64)),  # Resize images to 256x256 pixels.
+            transforms.ToTensor(),          # Convert images to PyTorch tensors.
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],  # Normalize with ImageNet means and stds.
+                                std=[0.229, 0.224, 0.225]),
+        ])
+
        
+        train_set = torchvision.datasets.Country211(root=root, split='train', transform=transform, download=True)
+        test_set = torchvision.datasets.Country211(root=root, split='test', transform=transform, download=True)
+        val_set = torchvision.datasets.Country211(root=root, split='valid', transform=transform, download=True)
+
+        print(len(train_set.classes)) 
+
+        dataset = train_set + test_set + val_set
+        input_channel = 3
+        print(f"size of country dataset: {len(train_set), len(test_set), len(val_set), len(dataset)}")
+        exit()
     
     elif dataset_name.lower() == "location":
         
@@ -634,25 +834,8 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
         input_size = len(first_sample)
         print(f"input size of Texas dataset: {input_size}")
         # exit()
-    elif dataset_name.lower() == "fmnist":
-        num_classes = 10
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
 
-        train_set = torchvision.datasets.FashionMNIST(
-                root=root, train=True, download=True, transform=transform)
-        test_set = torchvision.datasets.FashionMNIST(
-                root=root, train=False, download=True, transform=transform)
-
-        dataset = train_set + test_set
-        input_channel = 1
-        print(f"size of FMNIST dataset: {len(train_set), len(test_set)}")
-        # exit()
-        
-
+      
 
     if isinstance(num_classes, int):
         classes = num_classes
@@ -661,8 +844,9 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
 
     if arch.lower() == 'mlp':    
         if dataset_name.lower() == "location":
-            target_model = simpleNN(input_size=input_size, num_classes=classes)
-            shadow_model = simpleNN(input_size=input_size, num_classes=classes)
+            # Use LayerNorm + moderate dropout and slight input dropout for tabular features
+            target_model = simpleNN(input_size=input_size, num_classes=classes, dropout_p=0.25, use_layernorm=True, input_dropout_p=0.05)
+            shadow_model = simpleNN(input_size=input_size, num_classes=classes, dropout_p=0.25, use_layernorm=True, input_dropout_p=0.05)
         elif dataset_name.lower() == "purchase":
             target_model = simpleNN_Target_purchase(input_size=input_size, num_classes=classes)
             shadow_model = simpleNN_Shaddow_purchase(input_size=input_size, num_classes=classes)
@@ -676,12 +860,29 @@ def get_model_dataset(dataset_name, device, arch, attr, root):
         if arch.lower() == 'vgg16':
             print("getting vgg16 mode")
             # exit()
-            target_model = VGG16(input_channel=input_channel, num_classes=classes)
-            shadow_model = VGG16(input_channel=input_channel, num_classes=classes)
+            target_model = VGG16_new(input_channel=input_channel, num_classes=classes)
+            shadow_model = VGG16_new(input_channel=input_channel, num_classes=classes)
         elif arch.lower() == 'cnn':
-            print("getting cnn model")
+            print("getting AdvancedCNN model")
+            # exit()
+            target_model = AdvancedCNN_CNNStyle(input_channel=input_channel, num_classes=classes)
+            shadow_model = AdvancedCNN_CNNStyle(input_channel=input_channel, num_classes=classes)
+        elif arch.lower() == 'van_cnn':
+            print("getting van_cnn model")
             # exit()
             target_model = CNN(input_channel=input_channel, num_classes=classes)
             shadow_model = CNN(input_channel=input_channel, num_classes=classes)
-       
+        elif arch.lower() == 'wrn_rmia':
+            print("getting wrn_rmia model")
+
+            if dataset_name.lower() == 'fmnist':
+                target_model =  WideResNet_CNNStyle(input_channel=1, num_classes=num_classes, depth=28, width=2)
+                shadow_model =  WideResNet_CNNStyle(input_channel=1, num_classes=num_classes, depth=28, width=2)
+            else:
+                target_model =  WideResNet_CNNStyle(input_channel=3, num_classes=num_classes, depth=28, width=2)
+                shadow_model =  WideResNet_CNNStyle(input_channel=3, num_classes=num_classes, depth=28, width=2)
+
+    shadow_model = target_model
     return num_classes, dataset, target_model, shadow_model
+
+# thigs in need add capability for, right 
