@@ -22,7 +22,30 @@ from target_shadow_nn_models import *
 from opacus import PrivacyEngine
 from torch.optim import lr_scheduler
 from sklearn.metrics import f1_score, roc_auc_score, roc_curve, auc
+# import EarlyStopping
 from early_stopping_pytorch import EarlyStopping
+
+def TicTocGenerator():
+    # Generator that returns time differences
+    ti = 0           # initial time
+    tf = time.time() # final time
+    while True:
+        ti = tf
+        tf = time.time()
+        yield tf - ti  # returns the time difference
+
+TicToc = TicTocGenerator() # create an instance of the TicTocGen generator
+
+def toc(tempBool=True):
+    # Prints the time difference yielded by generator instance TicToc
+    tempTimeInterval = next(TicToc)
+    # if tempBool:
+        # print("Elapsed time: %f seconds." % tempTimeInterval)
+    return tempTimeInterval
+
+def tic():
+    # Records a time in TicToc, marks the beginning of a time interval
+    toc(False)  # The first call to toc() after this will measure from here
 
 
 def weights_init(m):
@@ -53,9 +76,12 @@ class shadow_train_class():
             self.optimizer = optim.SGD(self.net.parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-4)
 
 
-        
+        # Loss function: use standard CE (label smoothing removed to recover accuracy)
         self.criterion = nn.CrossEntropyLoss()
+        # self.optimizer = optim.SGD(self.net.parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-3)
         self.scheduler = lr_scheduler.MultiStepLR(self.optimizer, [50, 75], 0.1)
+
+
 
     # Training
     def train(self):
@@ -122,7 +148,8 @@ class shadow_train_class():
             print( 'Test Acc: %.3f%% (%d/%d)' % (100.*correct/total, correct, total))
 
         return 100.*correct/total
-   
+
+     
 class target_train_class():
     def __init__(self, trainloader, testloader, dataset_name, model, device, use_DP, noise, norm, delta, arch, batch_size):
         self.use_DP = use_DP
@@ -138,7 +165,7 @@ class target_train_class():
             cudnn.benchmark = True
 
         self.criterion = nn.CrossEntropyLoss()
-        # self.optimizer = optim.SGD(self.net.parameters(), lr=1e-2, momentum=0.9, weight_decay=5e-4)
+        
         self.noise_multiplier, self.max_grad_norm = noise, norm
 
         
@@ -274,6 +301,9 @@ class target_train_class():
                     max_grad_norm=self.max_grad_norm,
                 )          
                 print( 'noise_multiplier: %.3f | max_grad_norm: %.3f' % (self.noise_multiplier, self.max_grad_norm))
+
+            # self.scheduler = lr_scheduler.MultiStepLR(self.optimizer, [50, 75], 0.1)
+
    
     # Training
     def train(self):
@@ -326,6 +356,7 @@ class target_train_class():
             self.scheduler.step()
 
         return 1.*correct/total, acc_val
+
     # Testing
     def test(self):
         self.net.eval()
@@ -354,11 +385,10 @@ class target_train_class():
 
     def saveModel(self, path):
         torch.save(self.net.state_dict(), path)
-
+        
     def get_noise_norm(self):
         return self.noise_multiplier, self.max_grad_norm
 
-   
 def get_ent_lr(acc_gap, max_lr=0.005, k=10, mid=0.5):
     return max_lr * (1 - 1 / (1 + np.exp(-k * (acc_gap - mid))))
 
@@ -389,8 +419,8 @@ def sigmoid_adaptive_lr(gap, mid_gap=0.45, gap_range=0.65, max_lr=0.1, min_lr=0.
     return min_lr + (max_lr - min_lr) * sigmoid
 
 class attack_for_blackbox_com_NEW():
-    def __init__(self,TARGET_PATH,SHADOW_PATH, Perturb_MODELS_PATH, ATTACK_SETS,ATTACK_SETS_PV_CSV, attack_train_loader, 
-                 attack_test_loader, target_model, shadow_model, attack_model, perturb_model, device, dataset_name, attack_name, 
+    def __init__(self,TARGET_PATH, SHADOW_PATH, Perturb_MODELS_PATH, ATTACK_SETS,ATTACK_SETS_PV_CSV, attack_train_loader, 
+                 attack_test_loader, target_model, shadow_model, attack_model,  perturb_model, device, dataset_name, attack_name, 
                  num_classes, attack_dataset_batch_size, acc_gap, arch='mlp', membership_flip_prob=0.1):
         # acc_gap, arch, flip_prob
         self.device = device
@@ -412,7 +442,7 @@ class attack_for_blackbox_com_NEW():
         self.shadow_model.load_state_dict(torch.load(self.SHADOW_PATH, weights_only=True))
         self.arch = arch
         self.target_model.eval()
-        # self.shadow_model.eval()
+        self.shadow_model.eval()
         self.member_mean = 0.0
         self.member_std = 0.0
         self.non_member_mean = 0.0
@@ -525,6 +555,17 @@ class attack_for_blackbox_com_NEW():
         else: # stl10
             cs_lr = 0.01
             ent_lr = 0.001
+
+
+
+        # Note: the following were used to test fixed rates for VGG16-CIFAR10-5K
+        # cs_lr = 0.01
+        # ent_lr = 0.001
+
+        # Note: the following were used (in the paper) to test sgimoid-target acc gap based rates for VGG16, Without constrastive Loss
+        
+        # cs_lr = get_cs_lr(acc_gap)
+        # ent_lr = get_ent_lr(acc_gap)
         
 
         self.cosine_threshold = nn.Parameter(torch.tensor(0.5, device=self.device))
@@ -539,7 +580,6 @@ class attack_for_blackbox_com_NEW():
         self.optimizer_kl = torch.optim.Adam([self.kl_threshold], kl_lr)
 
      
-    
     def _maybe_flip_members(self, members):
         """Optionally flip membership indicators before using them as guidance signals."""
         if self.membership_flip_prob <= 0:
@@ -3169,7 +3209,6 @@ class attack_for_blackbox_com_NEW():
 
         return original_members, original_nonmembers, pert_members, pert_nonmembers
 
-   
     def _use_arial_fonts(self):
         import matplotlib as mpl
         from matplotlib import font_manager
@@ -3275,6 +3314,7 @@ class attack_for_blackbox_com_NEW():
         out_path = _ALL_DIS / f"{self.dataset_name}_{self.arch}_entropy_ridgeline.pdf"
         g.fig.savefig(out_path, dpi=300, bbox_inches="tight")
         plt.close(g.fig)
+
 
 
     def _plot_entropy_cdf(self, original_members, original_nonmembers, pert_members, pert_nonmembers, entropy_dis_dr):
@@ -3726,457 +3766,7 @@ class attack_for_blackbox_com_NEW():
         plt.close()
         print(f"Saved t-SNE PV visualization to {save_path}")
 
-    def liRA_offline(self):
-        
-        
-        
-
-        # Question? does the loaders have both members and non-members
-        #  yes, 
-        # self.attack_train_loader # Contains raw samples (made loader) used to train the target model
-        # self.attack_test_loader #  Contains raw samples (made loader) used to test the target model,
-        # also called target samples, these are used to obtain test PVs to test attack model
-        
-        # here the test.p contains conf_ob: confobs = (f(x)y)
-        # train is the confs of target model that did see target point (x,y), in this case its in test_loader
-        from scipy.stats import norm
-
-        outputs_list = []
-        members_list = []
-        targets_list = []
-
-        # Load data from the saved file (train.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "train.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs = torch.cat(outputs_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members = torch.cat(members_list, dim=0)     # shape: (total_samples,)
-        all_targets = torch.cat(targets_list, dim=0)     # shape: (total_samples,)
-
-        
-       
-        out_signals = all_outputs     # non-members (out)
-        
-        
-        mean_out = np.median(out_signals.numpy(), 1).reshape(-1, 1)
-
-       
-        std_out = np.std(out_signals.numpy(), 1).reshape(-1, 1)
-
-        print("Estimated distribution parameters:")
-        # print("Mean In-Signal:", mean_in)
-        print("Mean Out-Signal:", mean_out)
-        # print("Std In-Signal:", std_in)
-        print("Std Out-Signal:", std_out)
-        # exit()
-        # Now, for each sample, compute the negative log-likelihood under the two distributions.
-        # Here, sc (signal observed) is the correct confidence for each sample.
-        
-        outputs_test_list = []
-        members_test_list = []
-        targets_test_list = []
-
-        # Load data from the saved file (test.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "test.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_test_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_test_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_test_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs_test = torch.cat(outputs_test_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members_test = torch.cat(members_test_list, dim=0)     # shape: (total_samples,)
-        all_targets_test = torch.cat(targets_test_list, dim=0)     # shape: (total_samples,)
-
-        # print("Loaded data from test.p:")
-        # print(f"Outputs shape: {all_outputs_test.shape}")
-        # print(f"Members shape: {all_members_test.shape}")
-        # print(f"Targets shape: {all_targets_test.shape}")
-
-        # exit()
-        sc = all_outputs_test
-
-        # mean_out = np.median(out_signals, 1).reshape(-1, 1)
-        
-        
-        # std_out = np.std(out_signals, 1).reshape(-1, 1)
-
-        # If running in "offline" mode, you might choose to ignore the in-part
-        # (i.e., set pr_in=0) and only use the out-distribution.
-        
-
-        # print(f"Shape of all_outputs_test: {all_outputs_test.shape}")
-        # print(f"Shape of mean_out: {mean_out.shape}")
-        # print(f"Shape of std_out: {std_out.shape}")
-        # exit()
-        prediction = []
-        answers = []
-
-      
-        pr_in = 0
-        
-        pr_out = -norm.logpdf(all_outputs_test, mean_out, std_out + 1e-30) # gaussian approximation
-        score = pr_in - pr_out
-
-        prediction = np.array(score.mean(1))
-
-        # prediction_2 = np.array(score.mean(1))
-        prediction_2 = np.where(-score.mean(1) >= 0, 1, 0)
-        # For each sample, the membership score is given by 'score'.
-        # (You can decide on a threshold—for example, if score < 0, predict member.)
-        # print("First 10 LiRA scores:", score[:10])
-        # print(f"size of score: {score.shape}")
-        # print("Predictions (first 10):", prediction[:10])
-        # print("Predictions size:", prediction.shape)
-        # # Check if all prediction values are probabilities and print
-        
-        # # Check if all prediction values are less than 1
-        # print(f"Max of prediction: {np.max(prediction)}")
-        # # Print a few predictions to compare
-        # print("First 10 Predictions (Threshold Applied):", prediction_2[:10])
-        # print("First 10 Predictions (Raw Scores):", prediction[:10])
-        # print(f"Max of prediction_2: {np.max(prediction_2)}")
-        # print(f"Min of prediction_2: {np.min(prediction_2)}")
-
-        # correct = predicted.eq(all_members_test).sum().item()
-        answers = np.array(all_members_test.reshape(-1, 1), dtype=bool)
-        fpr_list, tpr_list, thresholds = roc_curve(answers.ravel(), (-prediction).ravel())
-        auc_score = auc(fpr_list, tpr_list)
-        # bcm = BinaryConfusionMatrix().to(self.device)
-        # conf_mat = bcm((-prediction).ravel(), all_members_test.ravel())
-        
-
-       
-
-        acc = np.max(1 - (fpr_list + (1 - tpr_list)) / 2)
-        
-        recall = np.max(tpr_list)
-        print(f"acc: {acc}, recall: {recall:.3f}")
-        # prec = np.sum((prediction > 0) & (answers > 0)) / np.sum(prediction > 0)
-        # recall = np.sum((prediction > 0) & (answers > 0)) / np.sum(answers > 0)
-        # print(f"Precision: {prec:.3f}, Recall: {recall:.3f}")
-        # print(f"Precision: {prec:.3f}, Recall: {recall:.3f}")
-        # print("First few FPR values:", fpr_list[:10])
-        # print("First few TPR values:", tpr_list[:10])
-        
-          
-        # Plot the ROC curve
-        # plt.figure(figsize=(8, 6))
-        # plt.plot(fpr_list, tpr_list, label="ROC curve (AUC = %0.2f)" % auc(fpr_list, tpr_list), lw=2, color='blue')
-        # plt.plot([0, 1], [0, 1], 'k--', lw=2, color='red')
-        # plt.xlim([0.0, 1.0])
-        # plt.ylim([0.0, 1.05])
-        # plt.xlabel("False Positive Rate", fontsize=14)
-        # plt.ylabel("True Positive Rate", fontsize=14)
-        # plt.title("Receiver Operating Characteristic (ROC) Curve", fontsize=16, fontweight="bold")
-        # plt.legend(loc="lower right", fontsize=12)
-        # plt.grid(True, linestyle="--", alpha=0.5)
-        # plt.tight_layout()
-        # plt.show()
-        # print(f"Correct predictions: {correct}")
-        # exit()
-        
-        return fpr_list, tpr_list, thresholds, auc_score
-
-
-    def liRA_offline_mul(self):
-        
-        
-        # load N target models (closely mimicking shadow models) trained already
-        # the output of these trained models is outsignals
-        # for each loaded target model, get their corresponding training dataset
-        # use its corresponding dataset to generate outsignals 
-        # concatinate for all N models, 
-        # for each dataset the N will be different 
-        # for testing we will target model trained on the entire dataset
-
-        
-
-        # Question? does the loaders have both members and non-members
-        #  yes, 
-        # self.attack_train_loader # Contains raw samples (made loader) used to train the target model
-        # self.attack_test_loader #  Contains raw samples (made loader) used to test the target model,
-        # also called target samples, these are used to obtain test PVs to test attack model
-        
-        # here the test.p contains conf_ob: confobs = (f(x)y)
-        # train is the confs of target model that did see target point (x,y), in this case its in test_loader
-        from scipy.stats import norm
-
-
-        outputs_list = []
-        members_list = []
-        targets_list = []
-
-        # Load data from the saved file (train.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "train.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs = torch.cat(outputs_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members = torch.cat(members_list, dim=0)     # shape: (total_samples,)
-        all_targets = torch.cat(targets_list, dim=0)     # shape: (total_samples,)
-
-        
-       
-        out_signals = all_outputs     # non-members (out)
-        
-        
-        mean_out = np.median(out_signals.numpy(), 1).reshape(-1, 1)
-
-       
-        std_out = np.std(out_signals.numpy(), 1).reshape(-1, 1)
-
-        print("Estimated distribution parameters:")
-        # print("Mean In-Signal:", mean_in)
-        print("Mean Out-Signal:", mean_out)
-        # print("Std In-Signal:", std_in)
-        print("Std Out-Signal:", std_out)
-        # exit()
-        # Now, for each sample, compute the negative log-likelihood under the two distributions.
-        # Here, sc (signal observed) is the correct confidence for each sample.
-        
-        outputs_test_list = []
-        members_test_list = []
-        targets_test_list = []
-
-        # Load data from the saved file (test.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "test.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_test_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_test_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_test_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs_test = torch.cat(outputs_test_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members_test = torch.cat(members_test_list, dim=0)     # shape: (total_samples,)
-        all_targets_test = torch.cat(targets_test_list, dim=0)     # shape: (total_samples,)
-
-        print("Loaded data from test.p:")
-        print(f"Outputs shape: {all_outputs_test.shape}")
-        print(f"Members shape: {all_members_test.shape}")
-        print(f"Targets shape: {all_targets_test.shape}")
-
-        # exit()
-        sc = all_outputs_test
-
-        # mean_out = np.median(out_signals, 1).reshape(-1, 1)
-        
-        
-        # std_out = np.std(out_signals, 1).reshape(-1, 1)
-
-        # If running in "offline" mode, you might choose to ignore the in-part
-        # (i.e., set pr_in=0) and only use the out-distribution.
-        
-
-        prediction = []
-        answers = []
-
-      
-        pr_in = 0
-        
-        pr_out = -norm.logpdf(all_outputs_test, mean_out, std_out + 1e-30) # gaussian approximation
-        score = pr_in - pr_out
-
-        prediction = np.array(score.mean(1))
-
-        # prediction_2 = np.array(score.mean(1))
-        prediction_2 = np.where(-score.mean(1) >= 0, 1, 0)
-        # For each sample, the membership score is given by 'score'.
-        # (You can decide on a threshold—for example, if score < 0, predict member.)
-        # print("First 10 LiRA scores:", score[:10])
-        # print(f"size of score: {score.shape}")
-        # print("Predictions (first 10):", prediction[:10])
-        # print("Predictions size:", prediction.shape)
-        # # Check if all prediction values are probabilities and print
-        
-        # # Check if all prediction values are less than 1
-        # print(f"Max of prediction: {np.max(prediction)}")
-        # # Print a few predictions to compare
-        # print("First 10 Predictions (Threshold Applied):", prediction_2[:10])
-        # print("First 10 Predictions (Raw Scores):", prediction[:10])
-        # print(f"Max of prediction_2: {np.max(prediction_2)}")
-        # print(f"Min of prediction_2: {np.min(prediction_2)}")
-
-        # correct = predicted.eq(all_members_test).sum().item()
-        answers = np.array(all_members_test.reshape(-1, 1), dtype=bool)
-        fpr_list, tpr_list, betas = roc_curve(answers.ravel(), (-prediction).ravel())
-        # bcm = BinaryConfusionMatrix().to(self.device)
-        # conf_mat = bcm((-prediction).ravel(), all_members_test.ravel())
-        
-
-        
-        acc = np.max(1 - (fpr_list + (1 - tpr_list)) / 2)
-        
-        recall = np.max(tpr_list)
-        print(f"acc: {acc}, recall: {recall:.3f}")
-        # prec = np.sum((prediction > 0) & (answers > 0)) / np.sum(prediction > 0)
-        # recall = np.sum((prediction > 0) & (answers > 0)) / np.sum(answers > 0)
-        # print(f"Precision: {prec:.3f}, Recall: {recall:.3f}")
-        # print(f"Precision: {prec:.3f}, Recall: {recall:.3f}")
-        # print("First few FPR values:", fpr_list[:10])
-        # print("First few TPR values:", tpr_list[:10])
-        
-          
-        # Plot the ROC curve
-        plt.figure(figsize=(8, 6))
-        plt.plot(fpr_list, tpr_list, label="ROC curve (AUC = %0.2f)" % auc(fpr_list, tpr_list), lw=2, color='blue')
-        plt.plot([0, 1], [0, 1], 'k--', lw=2, color='red')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel("False Positive Rate", fontsize=14)
-        plt.ylabel("True Positive Rate", fontsize=14)
-        plt.title("Receiver Operating Characteristic (ROC) Curve", fontsize=16, fontweight="bold")
-        plt.legend(loc="lower right", fontsize=12)
-        plt.grid(True, linestyle="--", alpha=0.5)
-        plt.tight_layout()
-        plt.show()
-        # print(f"Correct predictions: {correct}")
-        exit()
-    
-    def enh_mia(self):
-       
-        # Attack-R with linear interpolation (Ye et al.) https://arxiv.org/pdf/2111.09679.pdf
-        # Taken and repadated from https://github.com/yuan74/ml_privacy_meter/blob/2022_enhanced_mia/research/2022_enhanced_mia/plot_attack_via_reference_or_distill.py
-        # if len(target_signal.shape) == 2:
-        #     sc = target_signal[target_indices,0].reshape(-1, 1) # 50k x 1 , no augmentation
-        #     out_signals = out_signals[target_indices,:,0]
-        # else:
-
-
-        outputs_test_list = []
-        members_test_list = []
-        targets_test_list = []
-
-        # Load data from the saved file (test.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "test.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_test_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_test_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_test_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs_test = torch.cat(outputs_test_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members_test = torch.cat(members_test_list, dim=0)     # shape: (total_samples,)
-        all_targets_test = torch.cat(targets_test_list, dim=0)     # shape: (total_samples,)
-
-        print("Loaded data from test.p:")
-        print(f"Outputs shape: {all_outputs_test.shape}")
-        print(f"Members shape: {all_members_test.shape}")
-        print(f"Targets shape: {all_targets_test.shape}")
-
-        # exit()
-        sc = all_outputs_test
-        
-        outputs_list = []
-        members_list = []
-        targets_list = []
-
-        # Load data from the saved file (train.p)
-        with torch.no_grad():
-            with open(self.ATTACK_SETS + "train.p", "rb") as f:
-                while True:
-                    try:
-                        output, prediction, members, targets = pickle.load(f)
-                    except EOFError:
-                        break
-                    outputs_list.append(output.cpu())    # output: [batch, num_classes]
-                    members_list.append(members.cpu())     # membership flag, e.g. 1 for member, 0 for non-member
-                    targets_list.append(targets.cpu())     # true labels for each sample
-
-        # Concatenate batches to get one tensor per item.
-        all_outputs = torch.cat(outputs_list, dim=0)   # shape: (total_samples, num_classes)
-        all_members = torch.cat(members_list, dim=0)     # shape: (total_samples,)
-        all_targets = torch.cat(targets_list, dim=0)     # shape: (total_samples,)
-
-        #
-        # Now split the signals by membership.
-        # Here we assume that 'members' is 1 for training (member) and 0 for non-member.
-        # in_signals = correct_confidences[all_members.bool()]      # members (in)
-        out_signals = all_outputs     # non-members (out)
-
-
-        # sc = target_signal[target_indices] # 50k x 1
-        
-        def from_correct_logit_to_loss(array): # convert correct logit to the cross entropy loss
-            return np.log((1+np.exp(array))/np.exp(array)) # positive
-        
-        losses = from_correct_logit_to_loss(out_signals).T.numpy() # shape nb_models x nb_target, ref lossses
-        check_losses = from_correct_logit_to_loss(sc).T.numpy() # shape nb_target x 1, target losses
-
-        
-        dummy_min = np.zeros((1, len(losses[0]))) # shape 1 x nb_target
-
-        dummy_max = dummy_min + 1000 # shape 1 x nb_target
-
-        dat_reference_or_distill = np.sort(np.concatenate((losses, dummy_max, dummy_min), axis=0), axis=0) # shape nb_models + 2 x nb_target 
-
-        prediction = np.array([])
-        
-        discrete_alpha = np.linspace(0, 1, len(dat_reference_or_distill))
-        for i in range(len(dat_reference_or_distill[0])):
-            losses_i =  dat_reference_or_distill[:, i]
-
-            # Create the interpolator
-            pr = np.interp(check_losses[0,i], losses_i, discrete_alpha)
-            
-            prediction = np.append(prediction, pr)
-
-       
-
-        answers = np.array(all_members_test.reshape(-1, 1), dtype=bool)
-        # answers = np.array(all_members_test.reshape(-1, 1), dtype=bool)
-        fpr_list, tpr_list, betas = roc_curve(answers.ravel(), (prediction).ravel())
-
-         # Plot the ROC curve
-        plt.figure(figsize=(8, 6))
-        plt.plot(fpr_list, tpr_list, label="ROC curve (AUC = %0.2f)" % auc(fpr_list, tpr_list), lw=2, color='blue')
-        plt.plot([0, 1], [0, 1], 'k--', lw=2, color='red')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel("False Positive Rate", fontsize=14)
-        plt.ylabel("True Positive Rate", fontsize=14)
-        plt.title("Receiver Operating Characteristic (ROC) Curve", fontsize=16, fontweight="bold")
-        plt.legend(loc="lower right", fontsize=12)
-        plt.grid(True, linestyle="--", alpha=0.5)
-        plt.tight_layout()
-        plt.show()
-
-        print("OKAY")
-        exit()
-
-
+  
 
     def metric_results(fpr_list, tpr_list, thresholds):
         fprs = [0.01,0.001,0.0001,0.00001,0.0] # 1%, 0.1%, 0.01%, 0.001%, 0%
@@ -4217,6 +3807,72 @@ class attack_for_blackbox_com_NEW():
 
         return attack_trainloader, attack_testloader
 
+# end of attack class above
+
+
+def get_attack_dataset_with_shadow(target_train, target_test,  batch_size):
+    # mem_train, nonmem_train, mem_test, nonmem_test = list(shadow_train), list(shadow_test), list(target_train), list(target_test)
+
+    mem_train = list(target_train)
+    nonmem_test = list(target_test)
+
+    # for i in range(len(mem_train)):
+    #     mem_train[i] = mem_train[i] + (1,)
+    # for i in range(len(nonmem_train)):
+    #     nonmem_train[i] = nonmem_train[i] + (0,)
+    # for i in range(len(nonmem_test)):
+    #     nonmem_test[i] = nonmem_test[i] + (0,)
+    # for i in range(len(mem_test)):
+    #     mem_test[i] = mem_test[i] + (1,)
+
+    
+
+    train_length = min(len(mem_train), len(nonmem_train))
+    test_length = min(len(mem_test), len(nonmem_test))
+
+    mem_train, _ = torch.utils.data.random_split(mem_train, [train_length, len(mem_train) - train_length])
+    non_mem_train, _ = torch.utils.data.random_split(nonmem_train, [train_length, len(nonmem_train) - train_length])
+    mem_test, _ = torch.utils.data.random_split(mem_test, [test_length, len(mem_test) - test_length])
+    non_mem_test, _ = torch.utils.data.random_split(nonmem_test, [test_length, len(nonmem_test) - test_length])
+    
+    attack_train = mem_train + non_mem_train
+    attack_test = mem_test + non_mem_test
+
+    # attack_trainloader = torch.utils.data.DataLoader(
+    #     attack_train, batch_size=batch_size, shuffle=True, num_workers=1, persistent_workers=True)
+    # attack_testloader = torch.utils.data.DataLoader(
+    #     attack_test, batch_size=batch_size, shuffle=True, num_workers=1, persistent_workers=True)
+
+
+    for i in range(len(mem_train)):
+        mem_train[i] = mem_train[i] + (1,)
+    for i in range(len(nonmem_test)):
+        nonmem_test[i] = nonmem_test[i] + (0,)
+
+
+    attack_train = mem_train
+    attack_test = nonmem_test
+
+    attack_trainloader = torch.utils.data.DataLoader(
+        attack_train, batch_size=batch_size, shuffle=True, num_workers=1, persistent_workers=True)
+    attack_testloader = torch.utils.data.DataLoader(
+        attack_test, batch_size=batch_size, shuffle=True, num_workers=1, persistent_workers=True)
+
+    return attack_trainloader, attack_testloader
+
+
+def dataloader_to_dataset(dataloader):
+    data_list = []
+    
+    for batch in dataloader:
+        data, labels = batch  # assuming the data is returned as (data, labels)
+        data_list.append(data)
+    
+    # Concatenate all the batches into one dataset
+    full_data = torch.cat(data_list, dim=0)
+    
+    return full_data
+
 
 def save_best_checkpoint(val_metric, attack_obj, checkpoint_path):
     """Persist the best observed attack state (models, thresholds, optimisers)."""
@@ -4242,6 +3898,7 @@ def save_best_checkpoint(val_metric, attack_obj, checkpoint_path):
     print(f"Saved best checkpoint to {checkpoint_path}")
 
 # Combined attack
+# def attack_mode0_com(TARGET_PATH, SHADOW_PATH, ATTACK_PATH, device, attack_trainloader, attack_testloader, target_model, shadow_model, attack_model, perturb_model, get_attack_set, num_classes, mode):
 def attack_mode0_com(
         TARGET_PATH, SHADOW_PATH, ATTACK_PATH, device, attack_trainloader, attack_testloader,
         target_model, shadow_model, attack_model, perturb_model, num_classes, mode, dataset_name,
@@ -4262,163 +3919,168 @@ def attack_mode0_com(
 
     
     MODELS_PATH_att_per_thr = ATTACK_PATH + "_attack_pertubr_thresholds_"+attack_name+".pth" # will store all 
+
     bundle_path = entropy_checkpoint_path if entropy_checkpoint_path else MODELS_PATH_att_per_thr
 
+    # print(f"MODELS_PATH: {MODELS_PATH}, \nRESULT_PATH: {RESULT_PATH}, \nATTACK_PATH: {ATTACK_SETS}")
     
     epoch_data = []
     train_accuracy_list = []
     test_accuracy_list = []
     res_list = []
     cosine_entropy_threshold_list = []
-
-        
-    attack = attack_for_blackbox_com_NEW(TARGET_PATH, SHADOW_PATH, Perturb_MODELS_PATH, ATTACK_SETS,ATTACK_SETS_PV_CSV, attack_trainloader, attack_testloader, target_model, shadow_model, attack_model,perturb_model, device, dataset_name, attack_name, num_classes, attack_dataset_batch_size, acc_gap, arch, flip_prob)
-           
     
+    
+    # attack_dataset_batch_size = 64
         
-   
-    attack.delete_pickle()
-    attack.prepare_dataset_new() # uses shahow model to first obtain PVs and and the, combines it into [Pv, prediction, members, targets]
-    attack.bind_cached_attack_loaders()
-    if entropy_from_checkpoint:
-        if os.path.exists(bundle_path):
-            print(f"Using entropy checkpoint {bundle_path} to generate plots.")
-            attack.compute_entropy_distribution_from_checkpoint(bundle_path, entropy_dis_dr)
-            return
+    attack = attack_for_blackbox_com_NEW(TARGET_PATH, SHADOW_PATH, Perturb_MODELS_PATH, ATTACK_SETS,ATTACK_SETS_PV_CSV, attack_trainloader, attack_testloader, target_model, shadow_model,  attack_model,perturb_model, device, dataset_name, attack_name, num_classes, attack_dataset_batch_size, acc_gap, arch, flip_prob)
+           
+    if 1:
+        
+        get_attack_set = 1;
+        if get_attack_set:
+            attack.delete_pickle()
+            attack.prepare_dataset_new() # uses shahow model to first obtain PVs and and the, combines it into [Pv, prediction, members, targets]
+            attack.bind_cached_attack_loaders()
+            if entropy_from_checkpoint:
+                if os.path.exists(bundle_path):
+                    print(f"Using entropy checkpoint {bundle_path} to generate plots.")
+                    attack.compute_entropy_distribution_from_checkpoint(bundle_path, entropy_dis_dr)
+                    return
+                else:
+                    print(f"Entropy checkpoint requested but not found at {bundle_path}; continuing with training.")
+            
+
+        epochs = 100
+        tr_sum = 0.0
+        ts_sum = 0.0
+
+        res_list = []  # store final test metrics per epoch
+
+        threshold_progress = []  # list of tuples (cosine_threshold, entropy_threshold)
+        test_loss_progress = []  # list of average test losses
+
+        # initialize the early_stopping object
+        if dataset_name == "purchase":
+            patience = 7
+        elif dataset_name == "cifar10" and arch == "cnn":
+            patience = 5
         else:
-            print(f"Entropy checkpoint requested but not found at {bundle_path}; continuing with training.")
-        
-
-    epochs = 100
-    tr_sum = 0.0
-    ts_sum = 0.0
-
-    res_list = []  # store final test metrics per epoch
-
-    threshold_progress = []  # list of tuples (cosine_threshold, entropy_threshold)
-    test_loss_progress = []  # list of average test losses
-
-    # initialize the early_stopping object
-    if dataset_name == "purchase":
-        patience = 7
-    elif dataset_name == "cifar10" and arch == "cnn":
-        patience = 5
-    else:
-        patience = 15
+            patience = 15
 
 
-    early_stopping = EarlyStopping(patience=patience, verbose=True)
+        early_stopping = EarlyStopping(patience=patience, verbose=True)
 
-    best_metric = float('inf')
-    best_epoch = None
-    best_checkpoint_path = ATTACK_PATH + "_best_attack_state.pt"
+        best_metric = float('inf')
+        best_epoch = None
+        best_checkpoint_path = ATTACK_PATH + "_best_attack_state.pt"
 
-    for ep in range(epochs):
-        flag = 1 if ep == (epochs - 1) else 0
-        attack.current_epoch = ep + 1
-        print("Epoch %d:" % (attack.current_epoch))
+        for ep in range(epochs):
+            flag = 1 if ep == (epochs - 1) else 0
+            attack.current_epoch = ep + 1
+            print("Epoch %d:" % (attack.current_epoch))
 
-        res_train = attack.train(flag, RESULT_PATH, RESULT_PATH_csv, mode)
-        res_test, fpr, tpr = attack.test(flag, RESULT_PATH, mode)
+            res_train = attack.train(flag, RESULT_PATH, RESULT_PATH_csv, mode)
+            res_test, fpr, tpr = attack.test(flag, RESULT_PATH, mode)
 
-        current_cosine_threshold = torch.sigmoid(attack.cosine_threshold).item()
-        current_entropy_threshold = torch.sigmoid(attack.Entropy_quantile_threshold).item()
+            current_cosine_threshold = torch.sigmoid(attack.cosine_threshold).item()
+            current_entropy_threshold = torch.sigmoid(attack.Entropy_quantile_threshold).item()
 
-        res_list.append({
-            'epoch': attack.current_epoch,
-            'test_acc': res_test[0]*100,
-            'test_prec': res_test[1]*100,
-            'test_recall': res_test[2]*100,
-            'test_f1': res_test[3]*100,
-            'test_auc': res_test[4]*100,
-            'test_loss': res_test[-1],
-            'cosine_threshold': current_cosine_threshold,
-            'entropy_threshold': current_entropy_threshold,
-        })
+            res_list.append({
+                'epoch': attack.current_epoch,
+                'test_acc': res_test[0]*100,
+                'test_prec': res_test[1]*100,
+                'test_recall': res_test[2]*100,
+                'test_f1': res_test[3]*100,
+                'test_auc': res_test[4]*100,
+                'test_loss': res_test[-1],
+                'cosine_threshold': current_cosine_threshold,
+                'entropy_threshold': current_entropy_threshold,
+            })
 
-        early_stopping(res_test[-1], attack.attack_model)
+            early_stopping(res_test[-1], attack.attack_model)
 
-        if res_test[-1] < best_metric:
-            best_metric = res_test[-1]
-            best_epoch = attack.current_epoch
-            save_best_checkpoint(best_metric, attack, best_checkpoint_path)
+            if res_test[-1] < best_metric:
+                best_metric = res_test[-1]
+                best_epoch = attack.current_epoch
+                save_best_checkpoint(best_metric, attack, best_checkpoint_path)
 
-        if early_stopping.early_stop:
-            print("Early stopping")
-            break
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
 
-    map_location = torch.device(device) if isinstance(device, str) else device
-    best_checkpoint_available = os.path.exists(best_checkpoint_path)
-    if best_checkpoint_available:
-        checkpoint = torch.load(best_checkpoint_path, map_location=map_location)
-        attack.attack_model.load_state_dict(checkpoint['attack_model_state_dict'])
-        attack.perturb_model.load_state_dict(checkpoint['perturb_model_state_dict'])
+        map_location = torch.device(device) if isinstance(device, str) else device
+        best_checkpoint_available = os.path.exists(best_checkpoint_path)
+        if best_checkpoint_available:
+            checkpoint = torch.load(best_checkpoint_path, map_location=map_location)
+            attack.attack_model.load_state_dict(checkpoint['attack_model_state_dict'])
+            attack.perturb_model.load_state_dict(checkpoint['perturb_model_state_dict'])
 
-        attack.cosine_threshold.data.copy_(checkpoint['cosine_threshold'].to(attack.cosine_threshold.device))
-        attack.Entropy_quantile_threshold.data.copy_(checkpoint['entropy_threshold'].to(attack.Entropy_quantile_threshold.device))
+            attack.cosine_threshold.data.copy_(checkpoint['cosine_threshold'].to(attack.cosine_threshold.device))
+            attack.Entropy_quantile_threshold.data.copy_(checkpoint['entropy_threshold'].to(attack.Entropy_quantile_threshold.device))
 
-        best_epoch = checkpoint.get('epoch', best_epoch)
-        print(f"Loaded best checkpoint from epoch {best_epoch} with validation metric {best_metric:.4f}")
-    else:
-        print("Warning: no checkpoint saved during training; using final epoch parameters.")
+            best_epoch = checkpoint.get('epoch', best_epoch)
+            print(f"Loaded best checkpoint from epoch {best_epoch} with validation metric {best_metric:.4f}")
+        else:
+            print("Warning: no checkpoint saved during training; using final epoch parameters.")
 
-    best_cosine_threshold_param = attack.cosine_threshold.detach().cpu()
-    best_entropy_threshold_param = attack.Entropy_quantile_threshold.detach().cpu()
-    best_cosine_threshold = torch.sigmoid(best_cosine_threshold_param).item()
-    best_entropy_threshold = torch.sigmoid(best_entropy_threshold_param).item()
-    print(
-        f"Best Cosine Threshold: {best_cosine_threshold:.4f}, "
-        f"Best Entropy Threshold: {best_entropy_threshold:.4f}"
-    )
-
-    df = pd.DataFrame(res_list)
-    df['best_epoch'] = best_epoch
-    df['best_metric'] = best_metric
-    file_path = ATTACK_SETS + f"_Results-Mean_mode-{attack_name}_.csv"
-    df.to_csv(file_path, index=False)
-
-    if best_checkpoint_available:
-        attack.save_att_per_thresholds_models(best_checkpoint_path, MODELS_PATH_att_per_thr)
-        print(f'models and thresholds are savedQ')
-    else:
-        print('Skipping attack/threshold export; best checkpoint unavailable.')
-
-    best_cosine_threshold_raw = best_cosine_threshold_param.item()
-    best_entropy_threshold_raw = best_entropy_threshold_param.item()
-
-    fpr = tpr = thresholds = roc_auc = None
-
-    if attack_name == "apcmia":
-        print(f'computing ROC for apcmia')
-        attack.test_saved_model_apcmia(
-            attack.attack_model,
-            attack.perturb_model,
-            best_cosine_threshold_raw,
-            best_entropy_threshold_raw,
+        best_cosine_threshold_param = attack.cosine_threshold.detach().cpu()
+        best_entropy_threshold_param = attack.Entropy_quantile_threshold.detach().cpu()
+        best_cosine_threshold = torch.sigmoid(best_cosine_threshold_param).item()
+        best_entropy_threshold = torch.sigmoid(best_entropy_threshold_param).item()
+        print(
+            f"Best Cosine Threshold: {best_cosine_threshold:.4f}, "
+            f"Best Entropy Threshold: {best_entropy_threshold:.4f}"
         )
-        fpr, tpr, thresholds, roc_auc = attack.compute_roc_curve_apcmia(
-            attack.attack_model,
-            attack.perturb_model,
-            best_cosine_threshold_raw,
-            best_entropy_threshold_raw,
-        )
-        attack.compute_entropy_distribution_new_norm(
-            attack.attack_model,
-            attack.perturb_model,
-            best_cosine_threshold_raw,
-            best_entropy_threshold_raw,
-            entropy_dis_dr,
-        )
-    else:  # computing ROC for rest of the attacks
-        attack.test_saved_model_rest(attack.attack_model)
-        fpr, tpr, thresholds, roc_auc = attack.compute_roc_curve_rest(attack.attack_model)
 
-    if fpr is not None and tpr is not None:
-        df_fpr_tpr = pd.DataFrame({'FPR': fpr, 'TPR': tpr})
-        df_fpr_tpr.to_csv(fpr_tpr_file_path, index=False)
-        print(f"saved ROC curve info")
-    else:
-        print('ROC curve was not computed; skipping CSV export.')
+        df = pd.DataFrame(res_list)
+        df['best_epoch'] = best_epoch
+        df['best_metric'] = best_metric
+        file_path = ATTACK_SETS + f"_Results-Mean_mode-{attack_name}_.csv"
+        df.to_csv(file_path, index=False)
+
+        if best_checkpoint_available:
+            attack.save_att_per_thresholds_models(best_checkpoint_path, MODELS_PATH_att_per_thr)
+            print(f'models and thresholds are savedQ')
+        else:
+            print('Skipping attack/threshold export; best checkpoint unavailable.')
+
+        best_cosine_threshold_raw = best_cosine_threshold_param.item()
+        best_entropy_threshold_raw = best_entropy_threshold_param.item()
+
+        fpr = tpr = thresholds = roc_auc = None
+
+        if attack_name == "apcmia":
+            print(f'computing ROC for apcmia')
+            attack.test_saved_model_apcmia(
+                attack.attack_model,
+                attack.perturb_model,
+                best_cosine_threshold_raw,
+                best_entropy_threshold_raw,
+            )
+            fpr, tpr, thresholds, roc_auc = attack.compute_roc_curve_apcmia(
+                attack.attack_model,
+                attack.perturb_model,
+                best_cosine_threshold_raw,
+                best_entropy_threshold_raw,
+            )
+            attack.compute_entropy_distribution_new_norm(
+                attack.attack_model,
+                attack.perturb_model,
+                best_cosine_threshold_raw,
+                best_entropy_threshold_raw,
+                entropy_dis_dr,
+            )
+        else:  # computing ROC for rest of the attacks
+            attack.test_saved_model_rest(attack.attack_model)
+            fpr, tpr, thresholds, roc_auc = attack.compute_roc_curve_rest(attack.attack_model)
+
+        if fpr is not None and tpr is not None:
+            df_fpr_tpr = pd.DataFrame({'FPR': fpr, 'TPR': tpr})
+            df_fpr_tpr.to_csv(fpr_tpr_file_path, index=False)
+            print(f"saved ROC curve info")
+        else:
+            print('ROC curve was not computed; skipping CSV export.')
 
 
     if attack_name == "apcmia" and apcmia_cluster:
@@ -4435,3 +4097,5 @@ def attack_mode0_com(
 
         for target_class in range(num_classes):
             attack.visualize_transformed_pvs_classwise(target_class, attack.attack_model, attack.perturb_model, best_cosine_threshold_raw, best_entropy_threshold_raw, sub_folder)
+
+
