@@ -46,20 +46,28 @@ requirements.txt          # Python dependency list
 Example (MLP on Location):
 
 ```bash
-python main.py --dataset_name location --arch mlp --train_shadow
+python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --arch mlp --train_shadow
 ```
 
 ---
 
-### 🔧 Train Target + Run apcMIA Attack
+## 🏃 Usage
+
+### 🔧 Train Target Models
 
 Example (MLP on Location):
 
 ```bash
-python main.py --dataset_name location --arch mlp --attack_name apcmia --train_model --attack
-```
+python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --arch mlp --train_model
+---
 
-> This will first train the target model, save its overfitting gap, then run the apcMIA attack.
+### 🔧 Train and run apcMIA Attack
+
+Example (MLP on Location):
+
+```bash
+python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --arch mlp
+```
 
 ---
 
@@ -68,13 +76,13 @@ python main.py --dataset_name location --arch mlp --attack_name apcmia --train_m
 Train shadow model with DP-SGD:
 
 ```bash
-python main.py --dataset_name location  --arch mlp  --train_shadow  --use_DP  --noise 0.3  --norm 5  --delta 1e-5
+python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --train_shadow --use_DP --noise 0.3 --norm 10 --delta 1e-5 
 ```
 
 Train target model with DP-SGD **and** attack:
 
 ```bash
-python main.py --dataset_name location --arch mlp --attack_name apcmia --train_model --attack
+python main.py --attack_type 0 --dataset_name location  --attack_name apcmia --train_model --use_DP --noise 0.3 --norm 10 --delta 1e-5 
 ```
 
 > `--norm` is the clipping bound; adjust DP parameters to meet your privacy budget.
@@ -126,17 +134,12 @@ Run attacks with:
 Use `--arch mlp` for non-image datasets (Location, Adult, Purchase, Texas).  
 Use `--arch cnn` or `--arch van_cnn` for image datasets (CIFAR-10, CIFAR-100, FMNIST, STL-10).
 
-Example:
-
-```bash
-python main.py --dataset_name adult --arch mlp --attack_name apcmia --train_model --attack
-```
 
 ---
 
 ## 🧪 Evaluation Outputs
 
-By default, running `--attack` or `--plot` will save:
+By default, the `--plot` will save:
 
 - ROC curve plots (PDF) in `roc_curves/`  
 - TPR/FPR CSVs alongside the PDF  
