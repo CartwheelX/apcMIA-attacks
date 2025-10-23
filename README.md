@@ -118,12 +118,13 @@ Add `--apcmia_cluster` to reproduce the clustering visualizations from the paper
 
 Run attacks with:
 
-- `--arch cnn`  
+- `--arch van_cnn` (this for VanillaCNN)
+- `--arch cnn`   (this for advCNN)
 - `--arch mlp`  
-- `--arch vgg16`
+- `--arch wrn_rmia` (this for WRN)
 
 Use `--arch mlp` for non-image datasets (Location, Adult, Purchase, Texas).  
-Use `--arch cnn` or `--arch vgg16` for image datasets (CIFAR-10, CIFAR-100, FMNIST, STL-10).
+Use `--arch cnn` or `--arch van_cnn` for image datasets (CIFAR-10, CIFAR-100, FMNIST, STL-10).
 
 Example:
 
